@@ -1,70 +1,81 @@
-const User = require("../models/authModel");
-const jwt = require("jsonwebtoken");
-const { generateToken } = require("../middleware/authMiddleware");
+const User = require("../models/User");
+const generateToken = require("../utils/generateToken");
 
-// @desc    Register a new user
-// @route   POST /api/auth/register
 exports.registerUser = async (req, res) => {
-  const { phone, password, fullName, role } = req.body;
-
   try {
-    const userExists = await User.findOne({ phone });
-    if (userExists) {
-      return res
-        .status(400)
-        .json({ message: "A user with this phone number already exists" });
-    }
+    const { fullName, phone, password, role } = req.body;
 
-    if (role === "admin") {
-      return res.status(403).json({ message: "Unauthorized role assignment" });
+    const existingUser = await User.findOne({ phone });
+
+    if (existingUser) {
+      return res.status(409).json({
+        success: false,
+        message: "Phone number already registered",
+      });
     }
 
     const user = await User.create({
+      fullName,
       phone,
       password,
-      fullName,
-      role, 
+      role: role || "household",
     });
 
     res.status(201).json({
-      _id: user._id,
-      phone: user.phone,
-      fullName: user.fullName,
-      role: user.role,
-      token: generateToken(user._id),
+      success: true,
+      message: "Registration successful",
+      user: {
+        id: user._id,
+        fullName: user.fullName,
+        phone: user.phone,
+        role: user.role,
+      },
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
   }
 };
 
 exports.loginUser = async (req, res) => {
-  const { phone, password } = req.body;
-
   try {
+    const { phone, password } = req.body;
 
-    const user = await User.findOne({ phone });
+    const user = await User.findOne({ phone }).select("+password");
+
     if (!user) {
-      return res
-        .status(401)
-        .json({ message: "Invalid phone number or password" });
+      return res.status(401).json({
+        success: false,
+        message: "Invalid credentials",
+      });
     }
 
-    const isMatch = await user.comparePassword(password);
-    if (!isMatch) {
-      return res
-        .status(401)
-        .json({ message: "Invalid phone number or password" });
+    const match = await user.matchPassword(password);
+
+    if (!match) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid credentials",
+      });
     }
 
-    res.json({
-      _id: user._id,
-      phone: user.phone,
-      fullName: user.fullName,
-      role: user.role,
+    res.status(200).json({
+      success: true,
+      message: "Login successful",
+      user: {
+        id: user._id,
+        fullName: user.fullName,
+        phone: user.phone,
+        role: user.role,
+      },
       token: generateToken(user._id),
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
   }
 };

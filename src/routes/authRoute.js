@@ -1,9 +1,18 @@
 const express = require("express");
+
 const router = express.Router();
+
 const { registerUser, loginUser } = require("../controllers/authController");
 
-// Map endpoints to controller actions
-router.post("/register", registerUser);
-router.post("/login", loginUser);
+const {
+  registerValidator,
+  loginValidator,
+} = require("../validators/authValidators");
+
+const validate = require("../middleware/validationMiddleware");
+
+router.post("/register", registerValidator, validate, registerUser);
+
+router.post("/login", loginValidator, validate, loginUser);
 
 module.exports = router;
