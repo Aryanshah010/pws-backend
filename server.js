@@ -1,5 +1,6 @@
 const express = require("express");
 const cors = require("cors");
+const catalogRoutes = require("./src/routes/catalogRoute");
 require("dotenv").config();
 
 const connectDB = require("./src/config/db");
@@ -13,6 +14,7 @@ app.use(cors());
 app.use(express.json());
 
 app.use("/api/auth", authRoutes);
+app.use("/api/products", catalogRoutes);
 
 app.get("/", (req, res) => {
   res.send("API is running");

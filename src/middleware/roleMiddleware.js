@@ -16,13 +16,13 @@ const authorize = (...roles) => {
   };
 };
 
-const allowedRoles = ["household/individual buyer", "bulk/shop buyer"];
+const allowedRoles = ["household/individual", "bulk/shop"];
 
 const validateRegistrationRole = (req, res, next) => {
   const { role } = req.body;
 
   if (!role) {
-    req.body.role = "household";
+    req.body.role = "household/individual";
     return next();
   }
 

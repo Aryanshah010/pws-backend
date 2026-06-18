@@ -28,8 +28,13 @@ const userSchema = new mongoose.Schema(
 
     role: {
       type: String,
-      enum: ["household/individual buyer", "bulk/shop buyer", "admin"],
-      default: "household/individual buyer",
+      enum: [
+        "household/individual",
+        "bulk/shop",
+        "verified_wholesale",
+        "admin",
+      ],
+      default: "household/individual",
     },
   },
   {
