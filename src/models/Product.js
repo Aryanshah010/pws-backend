@@ -49,14 +49,14 @@ const productSchema = new mongoose.Schema(
       required: [true, "Base retail price is required"],
       min: [0, "Price cannot be negative"],
     },
-    // Array holding bulk tier adjustments (e.g., Buy 10+ items, get it for X price)
+
     tierPrices: [tierPriceSchema],
 
-    // Scrambled local string triggers for phonetic Nepali search matching
+
     aliases: {
       type: [String],
       default: [],
-      index: true, // Indexed for rapid lookup performance
+      index: true, 
     },
     stock: {
       type: Number,
@@ -65,9 +65,9 @@ const productSchema = new mongoose.Schema(
     },
     imageUrl: {
       type: String,
-      default: "", // Fallback handled gracefully by React
+      default: "", 
     },
-    // Array recording previous costs to populate frontend Recharts sparkline charts
+
     priceHistory: [priceHistorySchema],
   },
   {
@@ -77,14 +77,14 @@ const productSchema = new mongoose.Schema(
   },
 );
 
-// Virtual field: Automatically determines live stock matrix badge parameters
+
 productSchema.virtual("stockStatus").get(function () {
   if (this.stock <= 0) return "Out of Stock";
-  if (this.stock <= 15) return "Low Stock"; // Warning threshold
+  if (this.stock <= 15) return "Low Stock"; 
   return "In Stock";
 });
 
-// Middleware: Automatically push the initial retailPrice into the history array upon creation
+
 productSchema.pre("save", function () {
   if (this.isNew || this.isModified("retailPrice")) {
     this.priceHistory.push({ price: this.retailPrice, date: new Date() });

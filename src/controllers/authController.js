@@ -14,7 +14,6 @@ exports.registerUser = async (req, res) => {
       });
     }
 
-    // Safety fallback block: ensures roles align with model enum strings
     const registrationRole = role === "admin" || role === "verified_wholesale" 
       ? "household/individual" 
       : (role || "household/individual");

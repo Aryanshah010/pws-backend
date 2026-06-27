@@ -1,25 +1,20 @@
 const Product = require("../models/Product");
 
-// @desc    Get all products (with search & category filters)
-// @route   GET /api/products
 exports.getProducts = async (req, res) => {
   try {
     const { search, category } = req.query;
     let queryObject = {};
 
-    // 1. Localized Multilingual Search Logic
     if (search) {
-      // Clean up search keywords to safely run inside regular expressions
       const searchRegex = new RegExp(search.trim(), "i");
 
       queryObject.$or = [
         { name: searchRegex },
         { category: searchRegex },
-        { aliases: { $in: [searchRegex] } }, // Queries array variations
+        { aliases: { $in: [searchRegex] } }, 
       ];
     }
 
-    // 2. Category Dropdown Filter Logic
     if (category) {
       queryObject.category = category;
     }
@@ -39,8 +34,6 @@ exports.getProducts = async (req, res) => {
   }
 };
 
-// @desc    Get single product details
-// @route   GET /api/products/:id
 exports.getProductById = async (req, res) => {
   try {
     const product = await Product.findById(req.params.id);
@@ -63,8 +56,6 @@ exports.getProductById = async (req, res) => {
   }
 };
 
-// @desc    Create a product (Admin Only)
-// @route   POST /api/products
 exports.createProduct = async (req, res) => {
   try {
     const product = await Product.create(req.body);
