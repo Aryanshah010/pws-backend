@@ -31,10 +31,18 @@ const userSchema = new mongoose.Schema(
       enum: [
         "household/individual",
         "bulk/shop",
+        "pending_wholesale",
         "verified_wholesale",
         "admin",
       ],
       default: "household/individual",
+    },
+
+    wholesaleDetails: {
+      shopName: { type: String, trim: true },
+      shopLocation: { type: String, trim: true },
+      businessType: { type: String, trim: true },
+      panNumber: { type: String, trim: true },
     },
   },
   {
@@ -47,7 +55,6 @@ userSchema.pre("save", async function () {
 
   const salt = await bcrypt.genSalt(10);
   this.password = await bcrypt.hash(this.password, salt);
-
 });
 
 userSchema.methods.matchPassword = async function (enteredPassword) {

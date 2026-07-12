@@ -14,9 +14,10 @@ exports.registerUser = async (req, res) => {
       });
     }
 
-    const registrationRole = role === "admin" || role === "verified_wholesale" 
-      ? "household/individual" 
-      : (role || "household/individual");
+    const registrationRole =
+      role === "admin" || role === "verified_wholesale"
+        ? "household/individual"
+        : role || "household/individual";
 
     const user = await User.create({
       fullName,
@@ -75,6 +76,53 @@ exports.loginUser = async (req, res) => {
         role: user.role,
       },
       token: generateToken(user._id),
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.requestWholesale = async (req, res) => {
+  try {
+    const { shopName, shopLocation, businessType, panNumber } = req.body;
+
+    // req.user is set by authMiddleware
+    const user = await User.findById(req.user.id);
+
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+
+    if (user.role === "verified_wholesale") {
+      return res
+        .status(400)
+        .json({ success: false, message: "Already verified as wholesale" });
+    }
+
+    user.role = "pending_wholesale";
+    user.wholesaleDetails = {
+      shopName,
+      shopLocation,
+      businessType,
+      panNumber,
+    };
+
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Wholesale access requested successfully",
+      user: {
+        id: user._id,
+        fullName: user.fullName,
+        phone: user.phone,
+        role: user.role,
+      },
     });
   } catch (error) {
     res.status(500).json({
