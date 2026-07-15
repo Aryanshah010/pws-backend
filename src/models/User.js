@@ -38,12 +38,23 @@ const userSchema = new mongoose.Schema(
       default: "household/individual",
     },
 
+    wholesaleStatus: {
+      type: String,
+      enum: ["not_requested", "pending", "approved", "rejected"],
+      default: "not_requested",
+    },
+
     wholesaleDetails: {
       shopName: { type: String, trim: true },
       shopLocation: { type: String, trim: true },
       businessType: { type: String, trim: true },
       panNumber: { type: String, trim: true },
+      estimatedMonthlyPurchase: { type: Number, min: 0 },
     },
+
+    passwordResetCode: { type: String, select: false },
+    passwordResetExpiresAt: { type: Date, select: false },
+    passwordResetAttempts: { type: Number, default: 0, select: false },
   },
   {
     timestamps: true,
