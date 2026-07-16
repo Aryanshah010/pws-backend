@@ -13,6 +13,7 @@ const {
   resetPassword,
   listWholesaleRequests,
   decideWholesaleRequest,
+  getAdminUsers,
 } = require("../controllers/authController");
 const { protect, authorize } = require("../middleware/authMiddleware");
 
@@ -48,6 +49,7 @@ router.post(
   loginUser,
 );
 router.get("/me", protect, getCurrentUser);
+router.get("/admin/users", protect, authorize("admin"), getAdminUsers);
 router.put(
   "/wholesale-request",
   protect,

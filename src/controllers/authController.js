@@ -2,6 +2,7 @@ const User = require("../models/User");
 const generateToken = require("../utils/generateToken");
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
+const Order = require("../models/Order");
 
 const publicUser = (user) => ({
   id: user._id,
@@ -108,12 +109,10 @@ exports.requestWholesale = async (req, res) => {
     }
 
     if (user.role === "pending_wholesale") {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Your wholesale request is already pending",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Your wholesale request is already pending",
+      });
     }
 
     user.role = "pending_wholesale";
@@ -143,7 +142,9 @@ exports.requestWholesale = async (req, res) => {
 
 exports.listWholesaleRequests = async (_req, res) => {
   try {
-    const users = await User.find({ wholesaleStatus: "pending" }).sort({
+    const users = await User.find({
+      wholesaleStatus: { $in: ["pending", "approved", "rejected"] },
+    }).sort({
       updatedAt: -1,
     });
     res.status(200).json({ success: true, users: users.map(publicUser) });
@@ -158,12 +159,10 @@ exports.decideWholesaleRequest = async (req, res) => {
   try {
     const user = await User.findById(req.params.userId);
     if (!user || user.wholesaleStatus !== "pending") {
-      return res
-        .status(404)
-        .json({
-          success: false,
-          message: "Pending wholesale request not found",
-        });
+      return res.status(404).json({
+        success: false,
+        message: "Pending wholesale request not found",
+      });
     }
 
     const approved = req.body.decision === "approved";
@@ -188,6 +187,30 @@ exports.getCurrentUser = async (req, res) => {
   res.status(200).json({ success: true, user: publicUser(req.user) });
 };
 
+exports.getAdminUsers = async (_req, res) => {
+  try {
+    const users = await User.find().sort({ createdAt: -1 });
+    const counts = await Order.aggregate([
+      { $group: { _id: "$user", totalOrders: { $sum: 1 } } },
+    ]);
+    const countMap = new Map(
+      counts.map((item) => [item._id.toString(), item.totalOrders]),
+    );
+    res
+      .status(200)
+      .json({
+        success: true,
+        users: users.map((user) => ({
+          ...publicUser(user),
+          totalOrders: countMap.get(user._id.toString()) || 0,
+          joinedAt: user.createdAt,
+        })),
+      });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Could not load users" });
+  }
+};
+
 exports.requestPasswordReset = async (req, res) => {
   try {
     const user = await User.findOne({ phone: req.body.phone }).select(
@@ -195,12 +218,10 @@ exports.requestPasswordReset = async (req, res) => {
     );
     // Always return the same result so phone numbers cannot be enumerated.
     if (!user)
-      return res
-        .status(200)
-        .json({
-          success: true,
-          message: "If an account exists, an OTP has been sent.",
-        });
+      return res.status(200).json({
+        success: true,
+        message: "If an account exists, an OTP has been sent.",
+      });
 
     const otp = crypto.randomInt(100000, 1000000).toString();
     user.passwordResetCode = crypto
@@ -281,11 +302,9 @@ exports.resetPassword = async (req, res) => {
       .status(200)
       .json({ success: true, message: "Password changed. Please log in." });
   } catch (error) {
-    res
-      .status(400)
-      .json({
-        success: false,
-        message: "Your reset session has expired. Request a new OTP.",
-      });
+    res.status(400).json({
+      success: false,
+      message: "Your reset session has expired. Request a new OTP.",
+    });
   }
 };

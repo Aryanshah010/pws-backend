@@ -31,6 +31,9 @@ const productSchema = new mongoose.Schema(
       required: [true, "Product name is required"],
       trim: true,
     },
+    nameNe: { type: String, trim: true, default: "" },
+    description: { type: String, trim: true, maxlength: 1200, default: "" },
+    descriptionNe: { type: String, trim: true, maxlength: 1200, default: "" },
     category: {
       type: String,
       required: [true, "Category is required"],
@@ -44,6 +47,10 @@ const productSchema = new mongoose.Schema(
       ],
       trim: true,
     },
+    grade: { type: String, trim: true, default: "" },
+    packCount: { type: String, trim: true, default: "" },
+    shelfLife: { type: String, trim: true, default: "" },
+    origin: { type: String, trim: true, default: "" },
     retailPrice: {
       type: Number,
       required: [true, "Base retail price is required"],
@@ -52,11 +59,10 @@ const productSchema = new mongoose.Schema(
 
     tierPrices: [tierPriceSchema],
 
-
     aliases: {
       type: [String],
       default: [],
-      index: true, 
+      index: true,
     },
     stock: {
       type: Number,
@@ -65,8 +71,9 @@ const productSchema = new mongoose.Schema(
     },
     imageUrl: {
       type: String,
-      default: "", 
+      default: "",
     },
+    isActive: { type: Boolean, default: true },
 
     priceHistory: [priceHistorySchema],
   },
@@ -77,18 +84,23 @@ const productSchema = new mongoose.Schema(
   },
 );
 
-
 productSchema.virtual("stockStatus").get(function () {
   if (this.stock <= 0) return "Out of Stock";
-  if (this.stock <= 15) return "Low Stock"; 
+  if (this.stock <= 15) return "Low Stock";
   return "In Stock";
 });
-
 
 productSchema.pre("save", function () {
   if (this.isNew || this.isModified("retailPrice")) {
     this.priceHistory.push({ price: this.retailPrice, date: new Date() });
   }
+});
+
+productSchema.index({
+  name: "text",
+  nameNe: "text",
+  aliases: "text",
+  category: "text",
 });
 
 module.exports = mongoose.model("Product", productSchema);

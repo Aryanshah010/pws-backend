@@ -6,17 +6,19 @@ require("dotenv").config();
 const connectDB = require("./src/config/db");
 const authRoutes = require("./src/routes/authRoute");
 const orderRoutes = require("./src/routes/orderRoutes");
+const { connect } = require("./src/utils/realtime");
 
 const app = express();
 
 connectDB();
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "8mb" }));
 
 app.use("/api/auth", authRoutes);
 app.use("/api/products", catalogRoutes);
 app.use("/api/orders", orderRoutes);
+app.get("/api/events", connect);
 
 app.get("/", (req, res) => {
   res.send("API is running");
