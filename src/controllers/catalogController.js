@@ -1,8 +1,54 @@
 const Product = require("../models/Product");
 const RestockSubscription = require("../models/RestockSubscription");
+const Notification = require("../models/Notification");
 const { broadcast } = require("../utils/realtime");
+const notificationService = require("../services/notificationService");
+const templates = require("../services/messageTemplates");
 
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const fulfilRestockSubscriptions = async (product) => {
+  try {
+    const subscriptions = await RestockSubscription.find({
+      product: product._id,
+      status: "active",
+    }).populate("user", "phone");
+    if (!subscriptions.length) return;
+
+    const copy = templates.productRestocked(product);
+
+    for (const subscription of subscriptions) {
+      if (!subscription.user) continue;
+      await Notification.create({
+        user: subscription.user._id,
+        ...copy.inApp,
+        type: "restock",
+      });
+      broadcast(
+        "catalog-updated",
+        {
+          productId: product._id,
+          action: "restocked",
+          stockStatus: product.stockStatus,
+          push: copy.push,
+        },
+        { userId: subscription.user._id },
+      );
+      await notificationService.notify(
+        subscription.user.phone,
+        { sms: copy.sms },
+        `restock:${product.name}`,
+      );
+    }
+
+    await RestockSubscription.updateMany(
+      { product: product._id, status: "active" },
+      { status: "notified" },
+    );
+  } catch (error) {
+    console.error("Restock notification failed:", error.message);
+  }
+};
 
 const productFilters = (query) => {
   const filter = { isActive: { $ne: false } };
@@ -104,6 +150,8 @@ exports.updateProduct = async (req, res) => {
         .status(404)
         .json({ success: false, message: "Product not found" });
 
+    const wasOutOfStock = product.stock <= 0;
+
     Object.assign(product, req.body);
     await product.save();
     broadcast("catalog-updated", {
@@ -111,6 +159,10 @@ exports.updateProduct = async (req, res) => {
       action: "updated",
       stockStatus: product.stockStatus,
     });
+
+    if (wasOutOfStock && product.stock > 0) {
+      await fulfilRestockSubscriptions(product);
+    }
     res.status(200).json({
       success: true,
       message: "Product updated successfully",
@@ -161,7 +213,7 @@ exports.subscribeToRestock = async (req, res) => {
     const subscription = await RestockSubscription.findOneAndUpdate(
       { product: product._id, user: req.user._id },
       { status: "active" },
-      { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true },
+      { returnDocument: "after", upsert: true, setDefaultsOnInsert: true },
     );
     res.status(200).json({
       success: true,

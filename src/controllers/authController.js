@@ -3,6 +3,8 @@ const generateToken = require("../utils/generateToken");
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const Order = require("../models/Order");
+const notificationService = require("../services/notificationService");
+const templates = require("../services/messageTemplates");
 
 const publicUser = (user) => ({
   id: user._id,
@@ -26,18 +28,27 @@ exports.registerUser = async (req, res) => {
       });
     }
 
+
+    const isFirstAccount = (await User.countDocuments({ role: "admin" })) === 0;
+
     const user = await User.create({
       fullName,
       phone,
       password,
-      role,
+      role: isFirstAccount ? "admin" : role,
     });
 
+    /**
+     * Deliberately no token: registering does not sign you in. The buyer is
+     * sent to the login screen and the welcome ("account active") screen is
+     * shown after their first real sign-in instead.
+     */
     res.status(201).json({
       success: true,
-      message: "Registration successful",
+      message: isFirstAccount
+        ? "Storekeeper account created. Please log in."
+        : "Account created. Please log in to continue.",
       user: publicUser(user),
-      token: generateToken(user._id),
     });
   } catch (error) {
     res.status(500).json({
@@ -69,9 +80,15 @@ exports.loginUser = async (req, res) => {
       });
     }
 
+    // Read before stamping, so the welcome screen appears exactly once.
+    const firstLogin = !user.lastLoginAt;
+    user.lastLoginAt = new Date();
+    await user.save();
+
     res.status(200).json({
       success: true,
       message: "Login successful",
+      firstLogin,
       user: publicUser(user),
       token: generateToken(user._id),
     });
@@ -93,7 +110,6 @@ exports.requestWholesale = async (req, res) => {
       estimatedMonthlyPurchase,
     } = req.body;
 
-    // req.user is set by authMiddleware
     const user = await User.findById(req.user.id);
 
     if (!user) {
@@ -196,16 +212,14 @@ exports.getAdminUsers = async (_req, res) => {
     const countMap = new Map(
       counts.map((item) => [item._id.toString(), item.totalOrders]),
     );
-    res
-      .status(200)
-      .json({
-        success: true,
-        users: users.map((user) => ({
-          ...publicUser(user),
-          totalOrders: countMap.get(user._id.toString()) || 0,
-          joinedAt: user.createdAt,
-        })),
-      });
+    res.status(200).json({
+      success: true,
+      users: users.map((user) => ({
+        ...publicUser(user),
+        totalOrders: countMap.get(user._id.toString()) || 0,
+        joinedAt: user.createdAt,
+      })),
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: "Could not load users" });
   }
@@ -232,12 +246,17 @@ exports.requestPasswordReset = async (req, res) => {
     user.passwordResetAttempts = 0;
     await user.save();
 
+    await notificationService.notify(
+      user.phone,
+      templates.passwordResetOtp(otp),
+      "password-reset",
+    );
+
     const response = {
       success: true,
       message: "OTP created. It expires in 10 minutes.",
     };
-    // SMS credentials are intentionally not bundled with source code. This lets the
-    // university demo complete the real verification flow without exposing a provider.
+
     if (process.env.NODE_ENV !== "production") response.demoOtp = otp;
     res.status(200).json(response);
   } catch (error) {

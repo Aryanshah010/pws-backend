@@ -6,6 +6,7 @@ const Notification = require("../models/Notification");
 const User = require("../models/User");
 const { broadcast } = require("../utils/realtime");
 const notificationService = require("../services/notificationService");
+const templates = require("../services/messageTemplates");
 
 const priceFor = (product, quantity, role) => {
   if (role !== "verified_wholesale") return product.retailPrice;
@@ -13,6 +14,46 @@ const priceFor = (product, quantity, role) => {
     .sort((a, b) => b.minQuantity - a.minQuantity)
     .find((item) => quantity >= item.minQuantity);
   return tier?.price ?? product.retailPrice;
+};
+
+const nextTierFor = (product, quantity, role) => {
+  if (role !== "verified_wholesale") return null;
+  const tier = [...(product.tierPrices || [])]
+    .sort((a, b) => a.minQuantity - b.minQuantity)
+    .find((item) => quantity < item.minQuantity);
+  return tier ? { minQuantity: tier.minQuantity, price: tier.price } : null;
+};
+
+const dispatchOrderEvent = async (
+  order,
+  copy,
+  { phone, sms = false, whatsapp = false, type = "order" } = {},
+) => {
+  if (copy.inApp) {
+    await Notification.create({ user: order.user, ...copy.inApp, type });
+  }
+
+  broadcast(
+    "order-updated",
+    {
+      orderId: order._id,
+      orderStatus: order.orderStatus,
+      paymentStatus: order.paymentStatus,
+      push: copy.push,
+    },
+    { userId: order.user },
+  );
+
+  if (phone && (sms || whatsapp)) {
+    await notificationService.notify(
+      phone,
+      {
+        sms: sms ? copy.sms : undefined,
+        whatsapp: whatsapp ? copy.whatsapp : undefined,
+      },
+      copy.ref || "",
+    );
+  }
 };
 
 const quoteItems = async (items, role) => {
@@ -40,11 +81,14 @@ const quoteItems = async (items, role) => {
         `Insufficient stock for ${product.name}. Remaining: ${product.stock}`,
       );
     const unitPrice = priceFor(product, quantity, role);
+    const retailSubtotal = product.retailPrice * quantity;
     return {
       product,
       quantity,
       unitPrice,
-      retailSubtotal: product.retailPrice * quantity,
+      retailSubtotal,
+      discount: Math.max(0, retailSubtotal - unitPrice * quantity),
+      nextTier: nextTierFor(product, quantity, role),
     };
   });
   return quotedItems;
@@ -54,11 +98,20 @@ exports.quoteOrder = async (req, res) => {
   try {
     const quotedItems = await quoteItems(req.body.items, req.user.role);
     const items = quotedItems.map(
-      ({ product, quantity, unitPrice, retailSubtotal }) => ({
+      ({
+        product,
+        quantity,
+        unitPrice,
+        retailSubtotal,
+        discount,
+        nextTier,
+      }) => ({
         productId: product._id,
         quantity,
         unitPrice,
         retailSubtotal,
+        discount,
+        nextTier,
         total: unitPrice * quantity,
         stockStatus: product.stockStatus,
       }),
@@ -93,6 +146,30 @@ exports.createOrder = async (req, res) => {
     }
 
     const quotedItems = await quoteItems(items, req.user.role);
+
+    const expectedPrices = new Map(
+      items
+        .filter((item) => item.expectedUnitPrice != null)
+        .map((item) => [String(item.product), Number(item.expectedUnitPrice)]),
+    );
+    const repriced = quotedItems.filter((item) => {
+      const expected = expectedPrices.get(String(item.product._id));
+      return expected != null && expected !== item.unitPrice;
+    });
+    if (repriced.length) {
+      return res.status(409).json({
+        success: false,
+        message: `Price changed for ${repriced
+          .map((item) => item.product.name)
+          .join(", ")}. Review your cart and confirm again.`,
+        items: quotedItems.map(({ product, quantity, unitPrice }) => ({
+          productId: product._id,
+          quantity,
+          unitPrice,
+        })),
+      });
+    }
+
     const verifiedOrderItems = quotedItems.map(
       ({ product, quantity, unitPrice }) => ({
         product: product._id,
@@ -145,33 +222,11 @@ exports.createOrder = async (req, res) => {
       notes,
     });
 
-    // US #31 — in-app confirmation that Pathivara received the order
-    const shortId = order._id.toString().slice(-4).toUpperCase();
-    await Notification.create({
-      user: req.user.id,
-      title: `Order placed — PWS-${shortId}`,
-      message: `We received your order. It will be ready for pickup at your chosen slot.`,
-      type: "order",
+    await dispatchOrderEvent(order, templates.orderPlaced(order), {
+      phone: req.user.phone,
+      sms: true,
+      whatsapp: true,
     });
-    broadcast("order-updated", {
-      orderId: order._id,
-      userId: order.user,
-      orderStatus: order.orderStatus,
-      paymentStatus: order.paymentStatus,
-    });
-
-    // Send Twilio SMS and WhatsApp notifications asynchronously
-    if (req.user && req.user.phone) {
-      const smsMessage = `Pathivara Store: Your order PWS-${shortId} has been successfully placed. Slot: ${pickupSlot}. Status: Placed.`;
-      const waMessage = `Pathivara Store: Hello! Your order *PWS-${shortId}* is received. Status: *Placed*. Pickup Slot: *${pickupSlot}*. We will notify you when it's processing.`;
-
-      notificationService
-        .sendSMS(req.user.phone, smsMessage)
-        .catch((err) => console.error("Error sending SMS:", err));
-      notificationService
-        .sendWhatsApp(req.user.phone, waMessage)
-        .catch((err) => console.error("Error sending WhatsApp:", err));
-    }
 
     res.status(201).json({
       success: true,
@@ -226,11 +281,15 @@ exports.submitPaymentProof = async (req, res) => {
   }
 };
 
-exports.getBaskets = async (req, res) => {
-  const baskets = await Basket.find({ user: req.user.id })
-    .populate("items.product", "name unit retailPrice stock imageUrl")
-    .sort({ updatedAt: -1 });
-  res.status(200).json({ success: true, baskets });
+exports.getBaskets = async (req, res, next) => {
+  try {
+    const baskets = await Basket.find({ user: req.user.id })
+      .populate("items.product", "name unit retailPrice stock imageUrl")
+      .sort({ updatedAt: -1 });
+    res.status(200).json({ success: true, baskets });
+  } catch (error) {
+    next(error);
+  }
 };
 
 exports.saveBasket = async (req, res) => {
@@ -240,13 +299,14 @@ exports.saveBasket = async (req, res) => {
       return res
         .status(400)
         .json({ success: false, message: "Basket name is required" });
-    await quoteItems(items, req.user.role);
+    const quotedItems = await quoteItems(items, req.user.role);
     const basket = await Basket.create({
       user: req.user.id,
       name: name.trim(),
-      items: items.map((item) => ({
-        product: item.product,
-        quantity: item.quantity,
+      items: quotedItems.map(({ product, quantity, unitPrice }) => ({
+        product: product._id,
+        quantity,
+        priceAtSave: unitPrice,
       })),
     });
     res.status(201).json({ success: true, basket });
@@ -255,7 +315,7 @@ exports.saveBasket = async (req, res) => {
   }
 };
 
-exports.reviewBasket = async (req, res) => {
+exports.reviewBasket = async (req, res, next) => {
   try {
     const basket = await Basket.findOne({
       _id: req.params.id,
@@ -265,19 +325,67 @@ exports.reviewBasket = async (req, res) => {
       return res
         .status(404)
         .json({ success: false, message: "Basket not found" });
-    const quotedItems = await quoteItems(basket.items, req.user.role);
+
+    const products = await Product.find({
+      _id: { $in: basket.items.map((item) => item.product) },
+      isActive: { $ne: false },
+    });
+    const byId = new Map(
+      products.map((product) => [String(product._id), product]),
+    );
+
+    const items = basket.items.map((entry) => {
+      const product = byId.get(String(entry.product));
+      const priceAtSave = entry.priceAtSave ?? null;
+
+      if (!product) {
+        return {
+          productId: entry.product,
+          name: "No longer available",
+          quantity: entry.quantity,
+          unitPrice: 0,
+          priceAtSave,
+          priceDelta: 0,
+          available: false,
+          stockStatus: "Out of Stock",
+          lineTotal: 0,
+        };
+      }
+
+      const unitPrice = priceFor(product, entry.quantity, req.user.role);
+      return {
+        productId: product._id,
+        product,
+        name: product.name,
+        unit: product.unit,
+        quantity: entry.quantity,
+        unitPrice,
+        priceAtSave,
+        priceDelta: priceAtSave == null ? 0 : unitPrice - priceAtSave,
+        available: product.stock >= entry.quantity,
+        stock: product.stock,
+        stockStatus: product.stockStatus,
+        lineTotal: unitPrice * entry.quantity,
+      };
+    });
+
+    const availableItems = items.filter((item) => item.available);
     res.status(200).json({
       success: true,
       basket,
-      items: quotedItems.map(({ product, quantity, unitPrice }) => ({
-        product,
-        quantity,
-        unitPrice,
-        stockStatus: product.stockStatus,
-      })),
+      items,
+      summary: {
+        availableCount: availableItems.length,
+        priceChangedCount: items.filter((item) => item.priceDelta !== 0).length,
+        outOfStockCount: items.length - availableItems.length,
+        estimatedTotal: availableItems.reduce(
+          (total, item) => total + item.lineTotal,
+          0,
+        ),
+      },
     });
   } catch (error) {
-    res.status(400).json({ success: false, message: error.message });
+    next(error);
   }
 };
 
@@ -370,36 +478,18 @@ exports.updateOrderStatus = async (req, res) => {
 
     await order.save();
 
-    await Notification.create({
-      user: order.user,
-      title: `Order ${order.orderStatus}`,
-      message: `Your pickup order is now ${order.orderStatus}.`,
-      type: "order",
-    });
+    const copyFor = {
+      Placed: templates.orderPlaced,
+      Acknowledged: templates.orderAcknowledged,
+      Ready: templates.orderReady,
+      Collected: templates.orderCollected,
+    }[order.orderStatus];
 
-    broadcast("order-updated", {
-      orderId: order._id,
-      userId: order.user,
-      orderStatus: order.orderStatus,
-      paymentStatus: order.paymentStatus,
+    const buyer = await User.findById(order.user);
+    await dispatchOrderEvent(order, copyFor(order), {
+      phone: buyer?.phone,
+      sms: ["Acknowledged", "Ready"].includes(order.orderStatus),
     });
-
-    // Send external Twilio SMS notifications
-    const shortId = order._id.toString().slice(-4).toUpperCase();
-    const userDoc = await User.findById(order.user);
-    if (userDoc && userDoc.phone) {
-      if (orderStatus === "Acknowledged") {
-        const smsMessage = `Pathivara Store: Your order PWS-${shortId} has been accepted by the vendor and is being processed.`;
-        notificationService
-          .sendSMS(userDoc.phone, smsMessage)
-          .catch((err) => console.error("Error sending SMS:", err));
-      } else if (orderStatus === "Ready") {
-        const smsMessage = `Pathivara Store: Your order PWS-${shortId} is ready for pickup! Please arrive at your chosen slot: ${order.pickupSlot}.`;
-        notificationService
-          .sendSMS(userDoc.phone, smsMessage)
-          .catch((err) => console.error("Error sending SMS:", err));
-      }
-    }
 
     res.status(200).json({
       success: true,
@@ -411,12 +501,16 @@ exports.updateOrderStatus = async (req, res) => {
   }
 };
 
-exports.getAdminOrders = async (_req, res) => {
-  const orders = await Order.find()
-    .populate("user", "fullName phone")
-    .populate("items.product", "name unit")
-    .sort({ createdAt: -1 });
-  res.status(200).json({ success: true, orders });
+exports.getAdminOrders = async (_req, res, next) => {
+  try {
+    const orders = await Order.find()
+      .populate("user", "fullName phone")
+      .populate("items.product", "name unit retailPrice")
+      .sort({ createdAt: -1 });
+    res.status(200).json({ success: true, orders });
+  } catch (error) {
+    next(error);
+  }
 };
 
 exports.updatePaymentStatus = async (req, res) => {
@@ -433,20 +527,8 @@ exports.updatePaymentStatus = async (req, res) => {
         .json({ success: false, message: "Order not found" });
     order.paymentStatus = paymentStatus;
     await order.save();
-    await Notification.create({
-      user: order.user,
-      title: `Payment ${paymentStatus}`,
-      message:
-        paymentStatus === "Paid"
-          ? "Your digital payment has been confirmed."
-          : "Your payment proof was rejected. Please submit it again.",
+    await dispatchOrderEvent(order, templates.paymentDecision(paymentStatus), {
       type: "payment",
-    });
-    broadcast("order-updated", {
-      orderId: order._id,
-      userId: order.user,
-      orderStatus: order.orderStatus,
-      paymentStatus,
     });
     res.status(200).json({ success: true, order });
   } catch (error) {
@@ -454,21 +536,29 @@ exports.updatePaymentStatus = async (req, res) => {
   }
 };
 
-exports.getNotifications = async (req, res) => {
-  const notifications = await Notification.find({ user: req.user.id })
-    .sort({ createdAt: -1 })
-    .limit(20);
-  res.status(200).json({
-    success: true,
-    notifications,
-    unreadCount: notifications.filter((item) => !item.read).length,
-  });
+exports.getNotifications = async (req, res, next) => {
+  try {
+    const notifications = await Notification.find({ user: req.user.id })
+      .sort({ createdAt: -1 })
+      .limit(20);
+    res.status(200).json({
+      success: true,
+      notifications,
+      unreadCount: notifications.filter((item) => !item.read).length,
+    });
+  } catch (error) {
+    next(error);
+  }
 };
 
-exports.markNotificationsRead = async (req, res) => {
-  await Notification.updateMany(
-    { user: req.user.id, read: false },
-    { read: true },
-  );
-  res.status(200).json({ success: true });
+exports.markNotificationsRead = async (req, res, next) => {
+  try {
+    await Notification.updateMany(
+      { user: req.user.id, read: false },
+      { read: true },
+    );
+    res.status(200).json({ success: true });
+  } catch (error) {
+    next(error);
+  }
 };

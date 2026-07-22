@@ -12,6 +12,7 @@ const basketSchema = new mongoose.Schema(
           required: true,
         },
         quantity: { type: Number, min: 1, required: true },
+        priceAtSave: { type: Number, min: 0 },
       },
     ],
   },
