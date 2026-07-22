@@ -3,7 +3,9 @@ const Product = require("../models/Product");
 const Basket = require("../models/Basket");
 const Complaint = require("../models/Complaint");
 const Notification = require("../models/Notification");
+const User = require("../models/User");
 const { broadcast } = require("../utils/realtime");
+const notificationService = require("../services/notificationService");
 
 const priceFor = (product, quantity, role) => {
   if (role !== "verified_wholesale") return product.retailPrice;
@@ -111,7 +113,7 @@ exports.createOrder = async (req, res) => {
       const updated = await Product.findOneAndUpdate(
         { _id: item.product._id, stock: { $gte: item.quantity } },
         { $inc: { stock: -item.quantity } },
-        { returnDocument: 'after' },
+        { returnDocument: "after" },
       );
       if (!updated)
         return res.status(409).json({
@@ -157,6 +159,19 @@ exports.createOrder = async (req, res) => {
       orderStatus: order.orderStatus,
       paymentStatus: order.paymentStatus,
     });
+
+    // Send Twilio SMS and WhatsApp notifications asynchronously
+    if (req.user && req.user.phone) {
+      const smsMessage = `Pathivara Store: Your order PWS-${shortId} has been successfully placed. Slot: ${pickupSlot}. Status: Placed.`;
+      const waMessage = `Pathivara Store: Hello! Your order *PWS-${shortId}* is received. Status: *Placed*. Pickup Slot: *${pickupSlot}*. We will notify you when it's processing.`;
+
+      notificationService
+        .sendSMS(req.user.phone, smsMessage)
+        .catch((err) => console.error("Error sending SMS:", err));
+      notificationService
+        .sendWhatsApp(req.user.phone, waMessage)
+        .catch((err) => console.error("Error sending WhatsApp:", err));
+    }
 
     res.status(201).json({
       success: true,
@@ -368,6 +383,23 @@ exports.updateOrderStatus = async (req, res) => {
       orderStatus: order.orderStatus,
       paymentStatus: order.paymentStatus,
     });
+
+    // Send external Twilio SMS notifications
+    const shortId = order._id.toString().slice(-4).toUpperCase();
+    const userDoc = await User.findById(order.user);
+    if (userDoc && userDoc.phone) {
+      if (orderStatus === "Acknowledged") {
+        const smsMessage = `Pathivara Store: Your order PWS-${shortId} has been accepted by the vendor and is being processed.`;
+        notificationService
+          .sendSMS(userDoc.phone, smsMessage)
+          .catch((err) => console.error("Error sending SMS:", err));
+      } else if (orderStatus === "Ready") {
+        const smsMessage = `Pathivara Store: Your order PWS-${shortId} is ready for pickup! Please arrive at your chosen slot: ${order.pickupSlot}.`;
+        notificationService
+          .sendSMS(userDoc.phone, smsMessage)
+          .catch((err) => console.error("Error sending SMS:", err));
+      }
+    }
 
     res.status(200).json({
       success: true,
