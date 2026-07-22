@@ -15,6 +15,7 @@ const {
   updatePaymentStatus,
   getNotifications,
   markNotificationsRead,
+  markNotificationRead,
 } = require("../controllers/orderController");
 const { protect, authorize } = require("../middleware/authMiddleware");
 
@@ -26,6 +27,7 @@ router.get("/baskets", getBaskets);
 router.post("/baskets", saveBasket);
 router.get("/notifications", getNotifications);
 router.put("/notifications/read", markNotificationsRead);
+router.put("/notifications/:id/read", markNotificationRead);
 router.get("/baskets/:id/review", reviewBasket);
 router.get("/myorders", getMyOrders);
 router.get("/admin/all", authorize("admin"), getAdminOrders);

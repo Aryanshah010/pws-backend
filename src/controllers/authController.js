@@ -3,8 +3,43 @@ const generateToken = require("../utils/generateToken");
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const Order = require("../models/Order");
+const Notification = require("../models/Notification");
+const { broadcast } = require("../utils/realtime");
 const notificationService = require("../services/notificationService");
 const templates = require("../services/messageTemplates");
+
+/**
+ * Wholesale status changes are the one thing that rewrites what a signed-in
+ * buyer sees (tier prices, basket quotes), so every change lands in the bell
+ * first and tells the open tab to re-read the account.
+ */
+const dispatchAccountEvent = async (user, copy, { sms = true } = {}) => {
+  if (copy.inApp) {
+    await Notification.create({
+      user: user._id,
+      ...copy.inApp,
+      type: "wholesale",
+    });
+  }
+
+  broadcast(
+    "account-updated",
+    {
+      role: user.role,
+      wholesaleStatus: user.wholesaleStatus,
+      push: copy.push,
+    },
+    { userId: user._id },
+  );
+
+  if (sms) {
+    await notificationService.notify(
+      user.phone,
+      { sms: copy.sms },
+      `wholesale:${user.wholesaleStatus}`,
+    );
+  }
+};
 
 const publicUser = (user) => ({
   id: user._id,
@@ -143,6 +178,8 @@ exports.requestWholesale = async (req, res) => {
 
     await user.save();
 
+    await dispatchAccountEvent(user, templates.wholesaleSubmitted(user));
+
     res.status(200).json({
       success: true,
       message: "Wholesale access requested successfully",
@@ -185,6 +222,9 @@ exports.decideWholesaleRequest = async (req, res) => {
     user.wholesaleStatus = approved ? "approved" : "rejected";
     user.role = approved ? "verified_wholesale" : "bulk/shop";
     await user.save();
+
+    await dispatchAccountEvent(user, templates.wholesaleDecision(approved));
+
     res.status(200).json({
       success: true,
       message: approved

@@ -551,6 +551,18 @@ exports.getNotifications = async (req, res, next) => {
   }
 };
 
+exports.markNotificationRead = async (req, res, next) => {
+  try {
+    await Notification.updateOne(
+      { _id: req.params.id, user: req.user.id },
+      { read: true },
+    );
+    res.status(200).json({ success: true });
+  } catch (error) {
+    next(error);
+  }
+};
+
 exports.markNotificationsRead = async (req, res, next) => {
   try {
     await Notification.updateMany(

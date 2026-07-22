@@ -5,12 +5,12 @@ const tierPriceSchema = new mongoose.Schema(
     minQuantity: {
       type: Number,
       required: true,
-      min: [1, "Minimum quantity for a tier must be at least 1"],
+      min: [2, "A bulk tier must start at a quantity of 2 or more"],
     },
     price: {
       type: Number,
       required: true,
-      min: [0, "Tier price cannot be negative"],
+      min: [1, "Tier price must be greater than zero"],
     },
   },
   { _id: false },
@@ -83,6 +83,32 @@ const productSchema = new mongoose.Schema(
     toObject: { virtuals: true },
   },
 );
+
+// Tiers are a bulk discount, so each one must undercut retail and start at a
+// higher quantity than the tier before it. Stored sorted so readers can rely
+// on the order.
+productSchema.pre("validate", function (next) {
+  if (!this.tierPrices?.length) return next();
+
+  this.tierPrices.sort((a, b) => a.minQuantity - b.minQuantity);
+
+  for (let i = 0; i < this.tierPrices.length; i += 1) {
+    const tier = this.tierPrices[i];
+    if (tier.price >= this.retailPrice) {
+      return next(
+        new Error(
+          `Tier price at quantity ${tier.minQuantity} must be below the retail price`,
+        ),
+      );
+    }
+    if (i > 0 && tier.minQuantity === this.tierPrices[i - 1].minQuantity) {
+      return next(
+        new Error(`Duplicate pricing tier for quantity ${tier.minQuantity}`),
+      );
+    }
+  }
+  return next();
+});
 
 productSchema.virtual("stockStatus").get(function () {
   if (this.stock <= 0) return "Out of Stock";

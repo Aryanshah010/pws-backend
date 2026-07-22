@@ -11,6 +11,9 @@ const notificationSchema = new mongoose.Schema(
     title: { type: String, required: true, maxlength: 100 },
     message: { type: String, required: true, maxlength: 300 },
     type: { type: String, default: "system" },
+    // In-app route the bell should open when this notification is clicked.
+    // Empty means the entry is informational only.
+    link: { type: String, default: "" },
     read: { type: Boolean, default: false },
   },
   { timestamps: true },
