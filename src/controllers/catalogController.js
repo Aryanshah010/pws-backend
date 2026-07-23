@@ -1,11 +1,33 @@
 const Product = require("../models/Product");
 const RestockSubscription = require("../models/RestockSubscription");
 const Notification = require("../models/Notification");
+const StoreSettings = require("../models/StoreSettings");
 const { broadcast } = require("../utils/realtime");
 const notificationService = require("../services/notificationService");
 const templates = require("../services/messageTemplates");
+const { priceLadderErrors } = require("../config/pricing");
 
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Refuses a price ladder that breaks the store's minimum margin.
+ *
+ * Enforced here rather than in the schema because the floor depends on a store
+ * setting the model cannot read. Runs on the merged document, so an edit that
+ * only lowers a tier is still checked against the cost already on file.
+ */
+const assertMargin = async (product) => {
+  const settings = await StoreSettings.current();
+  const errors = priceLadderErrors(product, {
+    minMarginPercent: settings.minMarginPercent,
+    maxDiscountPercent: settings.maxDiscountPercent,
+  });
+  if (errors.length) {
+    const error = new Error(errors.join(" "));
+    error.statusCode = 400;
+    throw error;
+  }
+};
 
 const fulfilRestockSubscriptions = async (product) => {
   try {
@@ -125,9 +147,30 @@ exports.getProductById = async (req, res) => {
   }
 };
 
+/** The catalogue as the storekeeper needs to see it — costs and margins included. */
+exports.getAdminProducts = async (_req, res) => {
+  try {
+    const products = await Product.find()
+      .select("+costPrice")
+      .sort({ createdAt: -1 });
+    const settings = await StoreSettings.current();
+    res.status(200).json({
+      success: true,
+      count: products.length,
+      minMarginPercent: settings.minMarginPercent,
+      maxDiscountPercent: settings.maxDiscountPercent,
+      products,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 exports.createProduct = async (req, res) => {
   try {
-    const product = await Product.create(req.body);
+    const product = new Product(req.body);
+    await assertMargin(product);
+    await product.save();
     res.status(201).json({
       success: true,
       message: "Product created successfully",
@@ -135,7 +178,9 @@ exports.createProduct = async (req, res) => {
     });
     broadcast("catalog-updated", { productId: product._id, action: "created" });
   } catch (error) {
-    res.status(500).json({
+    // Bad catalogue data, not a server fault — and the message is written for
+    // the storekeeper, so it needs to reach the drawer intact.
+    res.status(error.statusCode || 400).json({
       success: false,
       message: error.message,
     });
@@ -144,7 +189,7 @@ exports.createProduct = async (req, res) => {
 
 exports.updateProduct = async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id);
+    const product = await Product.findById(req.params.id).select("+costPrice");
     if (!product)
       return res
         .status(404)
@@ -153,6 +198,7 @@ exports.updateProduct = async (req, res) => {
     const wasOutOfStock = product.stock <= 0;
 
     Object.assign(product, req.body);
+    await assertMargin(product);
     await product.save();
     broadcast("catalog-updated", {
       productId: product._id,
@@ -169,7 +215,9 @@ exports.updateProduct = async (req, res) => {
       product,
     });
   } catch (error) {
-    res.status(400).json({ success: false, message: error.message });
+    res
+      .status(error.statusCode || 400)
+      .json({ success: false, message: error.message });
   }
 };
 

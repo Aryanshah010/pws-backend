@@ -7,36 +7,37 @@ const User = require("../models/User");
 const { broadcast } = require("../utils/realtime");
 const notificationService = require("../services/notificationService");
 const templates = require("../services/messageTemplates");
-const { VAT_RATE, settleTotals } = require("../config/pricing");
+const { ensureWholesaleNotice } = require("../services/accountNotices");
+const {
+  VAT_RATE,
+  settleTotals,
+  normaliseTiers,
+  nextTierAfter,
+  lineDiscount,
+} = require("../config/pricing");
 
 /**
- * The bulk tiers this buyer can actually reach, cheapest quantity first.
- * Tiers are a wholesale benefit, and a tier that does not undercut retail at a
- * quantity above one is bad catalogue data — either way it must never reach the
- * buyer, or the cart promises a discount the order will not honour.
+ * The discount brackets this buyer can reach, lowest quantity first.
+ *
+ * The public table applies to everybody, so the discount ladder a product
+ * advertises is the ladder every buyer climbs. A verified wholesale account
+ * gets the deeper table instead, but only where the storekeeper has set one —
+ * otherwise wholesale falls back to the public ladder rather than to nothing.
  */
 const tiersFor = (product, role) => {
-  if (role !== "verified_wholesale") return [];
-  return [...(product.tierPrices || [])]
-    .filter(
-      (tier) =>
-        Number(tier.minQuantity) > 1 &&
-        Number(tier.price) > 0 &&
-        Number(tier.price) < product.retailPrice,
-    )
-    .map((tier) => ({ minQuantity: tier.minQuantity, price: tier.price }))
-    .sort((a, b) => a.minQuantity - b.minQuantity);
+  // A product the storekeeper has taken off discount has no ladder at all, for
+  // anyone — the thin-margin staples stay at one honest price.
+  if (product.discountable === false) return [];
+  const table =
+    role === "verified_wholesale" && product.wholesaleDiscountTiers?.length
+      ? product.wholesaleDiscountTiers
+      : product.discountTiers;
+  return normaliseTiers(table);
 };
 
-const priceFor = (product, quantity, role) => {
-  const tier = [...tiersFor(product, role)]
-    .reverse()
-    .find((item) => quantity >= item.minQuantity);
-  return tier?.price ?? product.retailPrice;
-};
-
-const nextTierFor = (product, quantity, role) =>
-  tiersFor(product, role).find((item) => quantity < item.minQuantity) ?? null;
+// The unit price never moves with quantity any more: bulk buying earns a flat
+// amount off the line, not a cheaper sack.
+const priceFor = (product) => product.retailPrice;
 
 const dispatchOrderEvent = async (
   order,
@@ -81,10 +82,13 @@ const quoteItems = async (items, role) => {
     return result;
   }, {});
 
+  // costPrice is withheld by default; the order needs it to record what the
+  // stock cost so realised margin can be reported later. It is never echoed
+  // back to the buyer — every response below maps explicit fields.
   const products = await Product.find({
     _id: { $in: Object.keys(grouped) },
     isActive: { $ne: false },
-  });
+  }).select("+costPrice");
   if (products.length !== Object.keys(grouped).length)
     throw new Error("One or more products are no longer available");
 
@@ -94,17 +98,18 @@ const quoteItems = async (items, role) => {
       throw new Error(
         `Insufficient stock for ${product.name}. Remaining: ${product.stock}`,
       );
-    const unitPrice = priceFor(product, quantity, role);
-    const retailSubtotal = product.retailPrice * quantity;
+    const unitPrice = priceFor(product);
+    const retailSubtotal = unitPrice * quantity;
     const tiers = tiersFor(product, role);
     return {
       product,
       quantity,
       unitPrice,
       retailSubtotal,
-      discount: Math.max(0, retailSubtotal - unitPrice * quantity),
+      // Flat, once per line — it does not multiply with quantity.
+      discount: lineDiscount(tiers, quantity, unitPrice),
       tiers,
-      nextTier: nextTierFor(product, quantity, role),
+      nextTier: nextTierAfter(tiers, quantity),
     };
   });
   return quotedItems;
@@ -133,7 +138,9 @@ exports.quoteOrder = async (req, res) => {
         discount,
         tiers,
         nextTier,
-        total: unitPrice * quantity,
+        // The flat discount comes off the line once, so the line total is not
+        // a multiple of any per-unit figure.
+        total: Math.max(0, retailSubtotal - discount),
         stockStatus: product.stockStatus,
         unit: product.unit,
         name: product.name,
@@ -220,6 +227,10 @@ exports.createOrder = async (req, res) => {
       (total, item) => total + item.discount,
       0,
     );
+    const costAmount = quotedItems.reduce(
+      (total, item) => total + (item.product.costPrice || 0) * item.quantity,
+      0,
+    );
     const { taxAmount, totalAmount } = settleTotals({
       subtotalAmount,
       discountAmount,
@@ -253,6 +264,7 @@ exports.createOrder = async (req, res) => {
       subtotalAmount,
       discountAmount,
       taxAmount,
+      costAmount,
       pickupSlot,
       paymentMethod,
       paymentStatus: targetPaymentStatus,
@@ -267,10 +279,15 @@ exports.createOrder = async (req, res) => {
       whatsapp: true,
     });
 
+    // select:false keeps costAmount out of later reads, but the document just
+    // created still carries it in memory — strip it before it reaches the buyer.
+    const buyerCopy = order.toObject();
+    delete buyerCopy.costAmount;
+
     res.status(201).json({
       success: true,
       message: "Order checked out and secured successfully",
-      order,
+      order: buyerCopy,
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -298,10 +315,12 @@ exports.submitPaymentProof = async (req, res) => {
       imageName = "",
       imageDataUrl = "",
     } = req.body;
-    if (!transactionId && !imageDataUrl)
+    // The screenshot is the evidence the storekeeper actually verifies against
+    // the bank app; a transaction ID alone leaves them nothing to check.
+    if (!imageDataUrl)
       return res.status(400).json({
         success: false,
-        message: "Enter a transaction ID or attach a payment screenshot",
+        message: "Attach a screenshot of the completed payment",
       });
     order.paymentProof = {
       transactionId,
@@ -325,7 +344,7 @@ exports.getBaskets = async (req, res, next) => {
     const baskets = await Basket.find({ user: req.user.id })
       .populate(
         "items.product",
-        "name unit retailPrice stock imageUrl tierPrices category",
+        "name unit retailPrice stock imageUrl discountTiers wholesaleDiscountTiers discountable category",
       )
       .sort({ updatedAt: -1 });
     res.status(200).json({ success: true, baskets });
@@ -394,7 +413,12 @@ exports.reviewBasket = async (req, res, next) => {
         };
       }
 
-      const unitPrice = priceFor(product, entry.quantity, req.user.role);
+      const unitPrice = priceFor(product);
+      const discount = lineDiscount(
+        tiersFor(product, req.user.role),
+        entry.quantity,
+        unitPrice,
+      );
       return {
         productId: product._id,
         product,
@@ -407,7 +431,7 @@ exports.reviewBasket = async (req, res, next) => {
         available: product.stock >= entry.quantity,
         stock: product.stock,
         stockStatus: product.stockStatus,
-        lineTotal: unitPrice * entry.quantity,
+        lineTotal: Math.max(0, unitPrice * entry.quantity - discount),
       };
     });
 
@@ -464,12 +488,12 @@ exports.createComplaint = async (req, res) => {
 exports.getMyOrders = async (req, res) => {
   try {
     // Order Again drops these products straight into the cart, so they have to
-    // arrive whole: without tierPrices and stock the cart cannot work out the
+    // arrive whole: without discountTiers and stock the cart cannot work out the
     // bulk threshold and every discount indicator reads as "no discount yet".
     const orders = await Order.find({ user: req.user.id })
       .populate(
         "items.product",
-        "name unit retailPrice imageUrl tierPrices stock category",
+        "name unit retailPrice imageUrl discountTiers wholesaleDiscountTiers discountable stock category",
       )
       .sort({ createdAt: -1 });
 
@@ -551,7 +575,10 @@ exports.updateOrderStatus = async (req, res) => {
 
 exports.getAdminOrders = async (_req, res, next) => {
   try {
+    // The storekeeper is the one party entitled to see cost, so realised
+    // margin can be reported per order.
     const orders = await Order.find()
+      .select("+costAmount")
       .populate("user", "fullName phone")
       .populate("items.product", "name unit retailPrice")
       .sort({ createdAt: -1 });
@@ -586,6 +613,10 @@ exports.updatePaymentStatus = async (req, res) => {
 
 exports.getNotifications = async (req, res, next) => {
   try {
+    // Make sure the buyer's wholesale standing is represented before the bell
+    // is read, so an account approved earlier is not left with an empty bell.
+    await ensureWholesaleNotice(req.user);
+
     const notifications = await Notification.find({ user: req.user.id })
       .sort({ createdAt: -1 })
       .limit(20);

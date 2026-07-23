@@ -7,6 +7,7 @@ const Notification = require("../models/Notification");
 const { broadcast } = require("../utils/realtime");
 const notificationService = require("../services/notificationService");
 const templates = require("../services/messageTemplates");
+const { wholesaleKey } = require("../services/accountNotices");
 
 /**
  * Wholesale status changes are the one thing that rewrites what a signed-in
@@ -15,11 +16,21 @@ const templates = require("../services/messageTemplates");
  */
 const dispatchAccountEvent = async (user, copy, { sms = true } = {}) => {
   if (copy.inApp) {
-    await Notification.create({
-      user: user._id,
-      ...copy.inApp,
-      type: "wholesale",
-    });
+    // Keyed by the standing it describes, so this and the reconciliation on
+    // read converge on exactly one entry per status.
+    const key = wholesaleKey(user);
+    await Notification.updateOne(
+      { user: user._id, key },
+      {
+        $setOnInsert: {
+          ...copy.inApp,
+          user: user._id,
+          type: "wholesale",
+          key,
+        },
+      },
+      { upsert: true },
+    );
   }
 
   broadcast(
@@ -33,11 +44,18 @@ const dispatchAccountEvent = async (user, copy, { sms = true } = {}) => {
   );
 
   if (sms) {
-    await notificationService.notify(
-      user.phone,
-      { sms: copy.sms },
-      `wholesale:${user.wholesaleStatus}`,
-    );
+    // The buyer's status has already changed and the bell already knows. A
+    // gateway that is down must not turn that into a failed approval for the
+    // storekeeper.
+    try {
+      await notificationService.notify(
+        user.phone,
+        { sms: copy.sms },
+        wholesaleKey(user),
+      );
+    } catch {
+      // Delivery is best-effort; the in-app notification is the record.
+    }
   }
 };
 

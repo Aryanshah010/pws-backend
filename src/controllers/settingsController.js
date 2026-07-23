@@ -35,7 +35,14 @@ exports.updateSettings = async (req, res, next) => {
       contactWhatsApp,
       pickupSlots,
       businessTypes,
+      minMarginPercent,
+      maxDiscountPercent,
     } = req.body || {};
+
+    if (minMarginPercent !== undefined)
+      settings.minMarginPercent = Number(minMarginPercent);
+    if (maxDiscountPercent !== undefined)
+      settings.maxDiscountPercent = Number(maxDiscountPercent);
 
     if (paymentQrImage !== undefined) settings.paymentQrImage = paymentQrImage;
     if (paymentQrName !== undefined) settings.paymentQrName = paymentQrName;
