@@ -8,6 +8,7 @@ const { broadcast } = require("../utils/realtime");
 const notificationService = require("../services/notificationService");
 const templates = require("../services/messageTemplates");
 const { ensureWholesaleNotice } = require("../services/accountNotices");
+const { notifyAdmins } = require("../services/adminNotices");
 const {
   VAT_RATE,
   settleTotals,
@@ -15,6 +16,13 @@ const {
   nextTierAfter,
   lineDiscount,
 } = require("../config/pricing");
+
+const ISSUE_LABELS = {
+  missing: "missing item",
+  damaged: "damaged item",
+  wrong: "wrong item",
+  other: "problem",
+};
 
 const tiersFor = (product, role) => {
   if (product.discountable === false) return [];
@@ -257,6 +265,14 @@ exports.createOrder = async (req, res) => {
       whatsapp: true,
     });
 
+    await notifyAdmins({
+      title: "New order placed",
+      message: `${req.user.fullName || "A customer"} placed an order for Rs. ${totalAmount}.`,
+      type: "order",
+      link: "/admin/orders",
+      key: `admin:order-placed:${order._id}`,
+    });
+
     const buyerCopy = order.toObject();
     delete buyerCopy.costAmount;
 
@@ -306,6 +322,15 @@ exports.submitPaymentProof = async (req, res) => {
     };
     order.paymentStatus = "Verifying";
     await order.save();
+
+    await notifyAdmins({
+      title: "Payment proof to verify",
+      message: `${req.user.fullName || "A customer"} uploaded proof for Rs. ${order.totalAmount}.`,
+      type: "payment",
+      link: "/admin/payments",
+      key: `admin:payment-proof:${order._id}:${order.paymentProof.submittedAt.getTime()}`,
+    });
+
     res
       .status(200)
       .json({ success: true, message: "Payment proof submitted", order });
@@ -454,9 +479,96 @@ exports.createComplaint = async (req, res) => {
       imageName,
       imageDataUrl,
     });
+
+    await notifyAdmins({
+      title: "New complaint filed",
+      message: `${req.user.fullName || "A customer"} reported a ${ISSUE_LABELS[complaint.issueType] || "problem"} on order ${templates.orderRef(order._id)}.`,
+      type: "complaint",
+      link: "/admin/complaints",
+      key: `admin:complaint:${complaint._id}`,
+    });
+
     res.status(201).json({ success: true, complaint });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+exports.getMyComplaints = async (req, res, next) => {
+  try {
+    const complaints = await Complaint.find({ user: req.user.id })
+      .select("-imageDataUrl")
+      .sort({ createdAt: -1 });
+    res.status(200).json({ success: true, complaints });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getAdminComplaints = async (req, res, next) => {
+  try {
+    const complaints = await Complaint.find()
+      .populate("user", "fullName phone")
+      .populate("handledBy", "fullName")
+      .populate({
+        path: "order",
+        select: "totalAmount orderStatus paymentStatus createdAt items",
+        populate: { path: "items.product", select: "name unit" },
+      })
+      .sort({ createdAt: -1 });
+    res.status(200).json({ success: true, complaints });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.updateComplaintStatus = async (req, res, next) => {
+  try {
+    const { status, resolutionNote = "" } = req.body;
+    if (!["Open", "In Review", "Resolved"].includes(status)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Unknown complaint status" });
+    }
+    if (status === "Resolved" && !resolutionNote.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Add a short note describing how this was resolved",
+      });
+    }
+
+    const complaint = await Complaint.findById(req.params.complaintId);
+    if (!complaint) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Complaint not found" });
+    }
+
+    complaint.status = status;
+    complaint.resolutionNote = resolutionNote.trim();
+    complaint.handledBy = req.user.id;
+    complaint.resolvedAt = status === "Resolved" ? new Date() : null;
+    await complaint.save();
+
+    // Close the loop with the buyer — the form promises a reply within 24h.
+    const copy = templates.complaintUpdated(
+      complaint,
+      templates.orderRef(complaint.order),
+    );
+    await Notification.create({
+      user: complaint.user,
+      ...copy.inApp,
+      type: "complaint",
+    });
+    broadcast(
+      "order-updated",
+      { orderId: complaint.order, push: copy.push },
+      { userId: complaint.user },
+    );
+
+    res.status(200).json({ success: true, complaint });
+  } catch (error) {
+    next(error);
   }
 };
 

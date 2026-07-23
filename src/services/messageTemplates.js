@@ -155,4 +155,25 @@ module.exports = {
           : "Your payment proof was rejected. Please submit it again.",
     },
   }),
+
+  complaintUpdated: (complaint, ref) => {
+    const resolved = complaint.status === "Resolved";
+    const body = resolved
+      ? complaint.resolutionNote
+      : "The store is looking into the issue you reported.";
+    return {
+      push: {
+        title: resolved
+          ? `Complaint resolved — ${ref}`
+          : `Complaint updated — ${ref}`,
+        body,
+      },
+      inApp: {
+        title: resolved
+          ? `Complaint resolved — ${ref}`
+          : `Complaint in review — ${ref}`,
+        message: body,
+      },
+    };
+  },
 };

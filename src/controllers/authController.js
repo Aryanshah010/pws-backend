@@ -6,6 +6,7 @@ const Order = require("../models/Order");
 const Notification = require("../models/Notification");
 const { broadcast } = require("../utils/realtime");
 const notificationService = require("../services/notificationService");
+const { notifyAdmins } = require("../services/adminNotices");
 const templates = require("../services/messageTemplates");
 const { wholesaleKey } = require("../services/accountNotices");
 
@@ -43,8 +44,7 @@ const dispatchAccountEvent = async (user, copy, { sms = true } = {}) => {
         { sms: copy.sms },
         wholesaleKey(user),
       );
-    } catch {
-    }
+    } catch {}
   }
 };
 
@@ -179,6 +179,13 @@ exports.requestWholesale = async (req, res) => {
     await user.save();
 
     await dispatchAccountEvent(user, templates.wholesaleSubmitted(user));
+
+    await notifyAdmins({
+      title: "Wholesale request awaiting review",
+      message: `${user.fullName || "A customer"} applied for bulk-buyer access${shopName ? ` for ${shopName}` : ""}.`,
+      type: "wholesale",
+      link: "/admin/wholesale",
+    });
 
     res.status(200).json({
       success: true,
