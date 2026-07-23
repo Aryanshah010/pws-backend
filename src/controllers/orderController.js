@@ -7,22 +7,36 @@ const User = require("../models/User");
 const { broadcast } = require("../utils/realtime");
 const notificationService = require("../services/notificationService");
 const templates = require("../services/messageTemplates");
+const { VAT_RATE, settleTotals } = require("../config/pricing");
+
+/**
+ * The bulk tiers this buyer can actually reach, cheapest quantity first.
+ * Tiers are a wholesale benefit, and a tier that does not undercut retail at a
+ * quantity above one is bad catalogue data — either way it must never reach the
+ * buyer, or the cart promises a discount the order will not honour.
+ */
+const tiersFor = (product, role) => {
+  if (role !== "verified_wholesale") return [];
+  return [...(product.tierPrices || [])]
+    .filter(
+      (tier) =>
+        Number(tier.minQuantity) > 1 &&
+        Number(tier.price) > 0 &&
+        Number(tier.price) < product.retailPrice,
+    )
+    .map((tier) => ({ minQuantity: tier.minQuantity, price: tier.price }))
+    .sort((a, b) => a.minQuantity - b.minQuantity);
+};
 
 const priceFor = (product, quantity, role) => {
-  if (role !== "verified_wholesale") return product.retailPrice;
-  const tier = [...(product.tierPrices || [])]
-    .sort((a, b) => b.minQuantity - a.minQuantity)
+  const tier = [...tiersFor(product, role)]
+    .reverse()
     .find((item) => quantity >= item.minQuantity);
   return tier?.price ?? product.retailPrice;
 };
 
-const nextTierFor = (product, quantity, role) => {
-  if (role !== "verified_wholesale") return null;
-  const tier = [...(product.tierPrices || [])]
-    .sort((a, b) => a.minQuantity - b.minQuantity)
-    .find((item) => quantity < item.minQuantity);
-  return tier ? { minQuantity: tier.minQuantity, price: tier.price } : null;
-};
+const nextTierFor = (product, quantity, role) =>
+  tiersFor(product, role).find((item) => quantity < item.minQuantity) ?? null;
 
 const dispatchOrderEvent = async (
   order,
@@ -82,12 +96,14 @@ const quoteItems = async (items, role) => {
       );
     const unitPrice = priceFor(product, quantity, role);
     const retailSubtotal = product.retailPrice * quantity;
+    const tiers = tiersFor(product, role);
     return {
       product,
       quantity,
       unitPrice,
       retailSubtotal,
       discount: Math.max(0, retailSubtotal - unitPrice * quantity),
+      tiers,
       nextTier: nextTierFor(product, quantity, role),
     };
   });
@@ -104,29 +120,45 @@ exports.quoteOrder = async (req, res) => {
         unitPrice,
         retailSubtotal,
         discount,
+        tiers,
         nextTier,
       }) => ({
         productId: product._id,
         quantity,
         unitPrice,
+        // The buyer's own catalogue price, sent back so the cart can tell a
+        // genuine price change apart from a tier the buyer just unlocked.
+        retailUnitPrice: product.retailPrice,
         retailSubtotal,
         discount,
+        tiers,
         nextTier,
         total: unitPrice * quantity,
         stockStatus: product.stockStatus,
+        unit: product.unit,
+        name: product.name,
       }),
     );
     const subtotalAmount = items.reduce(
       (total, item) => total + item.retailSubtotal,
       0,
     );
-    const totalAmount = items.reduce((total, item) => total + item.total, 0);
+    const discountAmount = items.reduce(
+      (total, item) => total + item.discount,
+      0,
+    );
+    const { netAmount, taxAmount, totalAmount } = settleTotals({
+      subtotalAmount,
+      discountAmount,
+    });
     res.status(200).json({
       success: true,
       items,
       subtotalAmount,
-      discountAmount: subtotalAmount - totalAmount,
-      taxAmount: 0,
+      discountAmount,
+      netAmount,
+      taxRate: VAT_RATE,
+      taxAmount,
       totalAmount,
     });
   } catch (error) {
@@ -166,6 +198,9 @@ exports.createOrder = async (req, res) => {
           productId: product._id,
           quantity,
           unitPrice,
+          // Carried alongside so the cart can resynchronise fully and stop
+          // flagging a price change it has already accepted.
+          retailUnitPrice: product.retailPrice,
         })),
       });
     }
@@ -181,10 +216,14 @@ exports.createOrder = async (req, res) => {
       (total, item) => total + item.retailSubtotal,
       0,
     );
-    const calculatedTotal = quotedItems.reduce(
-      (total, item) => total + item.unitPrice * item.quantity,
+    const discountAmount = quotedItems.reduce(
+      (total, item) => total + item.discount,
       0,
     );
+    const { taxAmount, totalAmount } = settleTotals({
+      subtotalAmount,
+      discountAmount,
+    });
 
     for (const item of quotedItems) {
       const updated = await Product.findOneAndUpdate(
@@ -210,10 +249,10 @@ exports.createOrder = async (req, res) => {
     const order = await Order.create({
       user: req.user.id,
       items: verifiedOrderItems,
-      totalAmount: calculatedTotal,
+      totalAmount,
       subtotalAmount,
-      discountAmount: subtotalAmount - calculatedTotal,
-      taxAmount: 0,
+      discountAmount,
+      taxAmount,
       pickupSlot,
       paymentMethod,
       paymentStatus: targetPaymentStatus,
@@ -284,7 +323,10 @@ exports.submitPaymentProof = async (req, res) => {
 exports.getBaskets = async (req, res, next) => {
   try {
     const baskets = await Basket.find({ user: req.user.id })
-      .populate("items.product", "name unit retailPrice stock imageUrl")
+      .populate(
+        "items.product",
+        "name unit retailPrice stock imageUrl tierPrices category",
+      )
       .sort({ updatedAt: -1 });
     res.status(200).json({ success: true, baskets });
   } catch (error) {
@@ -421,8 +463,14 @@ exports.createComplaint = async (req, res) => {
 
 exports.getMyOrders = async (req, res) => {
   try {
+    // Order Again drops these products straight into the cart, so they have to
+    // arrive whole: without tierPrices and stock the cart cannot work out the
+    // bulk threshold and every discount indicator reads as "no discount yet".
     const orders = await Order.find({ user: req.user.id })
-      .populate("items.product", "name unit retailPrice imageUrl")
+      .populate(
+        "items.product",
+        "name unit retailPrice imageUrl tierPrices stock category",
+      )
       .sort({ createdAt: -1 });
 
     res.status(200).json({
