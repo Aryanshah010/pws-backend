@@ -9,13 +9,6 @@ const { priceLadderErrors } = require("../config/pricing");
 
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/**
- * Refuses a price ladder that breaks the store's minimum margin.
- *
- * Enforced here rather than in the schema because the floor depends on a store
- * setting the model cannot read. Runs on the merged document, so an edit that
- * only lowers a tier is still checked against the cost already on file.
- */
 const assertMargin = async (product) => {
   const settings = await StoreSettings.current();
   const errors = priceLadderErrors(product, {
@@ -147,7 +140,6 @@ exports.getProductById = async (req, res) => {
   }
 };
 
-/** The catalogue as the storekeeper needs to see it — costs and margins included. */
 exports.getAdminProducts = async (_req, res) => {
   try {
     const products = await Product.find()
@@ -178,8 +170,7 @@ exports.createProduct = async (req, res) => {
     });
     broadcast("catalog-updated", { productId: product._id, action: "created" });
   } catch (error) {
-    // Bad catalogue data, not a server fault — and the message is written for
-    // the storekeeper, so it needs to reach the drawer intact.
+
     res.status(error.statusCode || 400).json({
       success: false,
       message: error.message,

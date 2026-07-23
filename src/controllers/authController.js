@@ -9,15 +9,8 @@ const notificationService = require("../services/notificationService");
 const templates = require("../services/messageTemplates");
 const { wholesaleKey } = require("../services/accountNotices");
 
-/**
- * Wholesale status changes are the one thing that rewrites what a signed-in
- * buyer sees (tier prices, basket quotes), so every change lands in the bell
- * first and tells the open tab to re-read the account.
- */
 const dispatchAccountEvent = async (user, copy, { sms = true } = {}) => {
   if (copy.inApp) {
-    // Keyed by the standing it describes, so this and the reconciliation on
-    // read converge on exactly one entry per status.
     const key = wholesaleKey(user);
     await Notification.updateOne(
       { user: user._id, key },
@@ -44,9 +37,6 @@ const dispatchAccountEvent = async (user, copy, { sms = true } = {}) => {
   );
 
   if (sms) {
-    // The buyer's status has already changed and the bell already knows. A
-    // gateway that is down must not turn that into a failed approval for the
-    // storekeeper.
     try {
       await notificationService.notify(
         user.phone,
@@ -54,7 +44,6 @@ const dispatchAccountEvent = async (user, copy, { sms = true } = {}) => {
         wholesaleKey(user),
       );
     } catch {
-      // Delivery is best-effort; the in-app notification is the record.
     }
   }
 };
@@ -81,7 +70,6 @@ exports.registerUser = async (req, res) => {
       });
     }
 
-
     const isFirstAccount = (await User.countDocuments({ role: "admin" })) === 0;
 
     const user = await User.create({
@@ -91,11 +79,6 @@ exports.registerUser = async (req, res) => {
       role: isFirstAccount ? "admin" : role,
     });
 
-    /**
-     * Deliberately no token: registering does not sign you in. The buyer is
-     * sent to the login screen and the welcome ("account active") screen is
-     * shown after their first real sign-in instead.
-     */
     res.status(201).json({
       success: true,
       message: isFirstAccount
@@ -133,7 +116,6 @@ exports.loginUser = async (req, res) => {
       });
     }
 
-    // Read before stamping, so the welcome screen appears exactly once.
     const firstLogin = !user.lastLoginAt;
     user.lastLoginAt = new Date();
     await user.save();
@@ -288,7 +270,7 @@ exports.requestPasswordReset = async (req, res) => {
     const user = await User.findOne({ phone: req.body.phone }).select(
       "+passwordResetCode +passwordResetExpiresAt +passwordResetAttempts",
     );
-    // Always return the same result so phone numbers cannot be enumerated.
+
     if (!user)
       return res.status(200).json({
         success: true,

@@ -8,7 +8,6 @@ const pickupSlotSchema = new mongoose.Schema(
   { _id: false },
 );
 
-
 const storeSettingsSchema = new mongoose.Schema(
   {
     key: { type: String, default: "store", unique: true, immutable: true },
@@ -25,9 +24,6 @@ const storeSettingsSchema = new mongoose.Schema(
     pickupSlots: { type: [pickupSlotSchema], default: [] },
     businessTypes: { type: [String], default: [] },
 
-    // The thinnest margin the store is willing to sell at. Every buyer price
-    // and every discount tier is checked against it, so no product can be
-    // saved with a ladder that gives away more than the store can afford.
     minMarginPercent: {
       type: Number,
       default: 10,
@@ -35,9 +31,6 @@ const storeSettingsSchema = new mongoose.Schema(
       max: [90, "Minimum margin must be below 90%"],
     },
 
-    // The deepest any single tier may cut below the buyer price. Unlike the
-    // margin floor this needs no cost price, so it is the guard that catches a
-    // mistyped tier on a product whose cost was never entered.
     maxDiscountPercent: {
       type: Number,
       default: 40,

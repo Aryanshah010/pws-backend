@@ -52,8 +52,6 @@ const userSchema = new mongoose.Schema(
       estimatedMonthlyPurchase: { type: Number, min: 0 },
     },
 
-    // Null until the account's first successful sign-in. Lets the app show
-    // the welcome screen exactly once instead of on every login.
     lastLoginAt: { type: Date, default: null },
 
     passwordResetCode: { type: String, select: false },

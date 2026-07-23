@@ -50,7 +50,6 @@ const logDelivery = (channel, to, status, detail) => {
   );
 };
 
-
 exports.sendSMS = async (toPhone, message, context = "") => {
   const to = toE164(toPhone);
   if (!to) {
@@ -190,7 +189,6 @@ exports.sendWhatsApp = async (toPhone, message, context = "") => {
     };
   }
 };
-
 
 exports.notify = async (phone, { sms, whatsapp } = {}, context = "") => {
   const attempts = [];

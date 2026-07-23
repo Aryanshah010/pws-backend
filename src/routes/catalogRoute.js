@@ -14,8 +14,6 @@ const { protect, authorize } = require("../middleware/authMiddleware");
 
 router.get("/", getProducts);
 router.get("/categories", getCategories);
-// Registered before "/:id" so the literal path is not swallowed by the
-// parameter route.
 router.get("/admin/list", protect, authorize("admin"), getAdminProducts);
 router.get("/:id", getProductById);
 router.post("/:id/restock-subscriptions", protect, subscribeToRestock);

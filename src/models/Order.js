@@ -36,12 +36,6 @@ const orderSchema = new mongoose.Schema(
     subtotalAmount: { type: Number, required: true },
     discountAmount: { type: Number, default: 0 },
     taxAmount: { type: Number, default: 0 },
-
-    // What this order's stock cost the store, frozen at purchase so realised
-    // margin stays true even after the supplier's price moves. Zero where the
-    // storekeeper had not entered a cost for the items.
-    // Withheld from every query unless explicitly asked for, so a buyer
-    // fetching their own order never learns what the store paid.
     costAmount: { type: Number, default: 0, select: false },
     pickupSlot: {
       type: String,

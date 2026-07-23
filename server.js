@@ -31,7 +31,6 @@ app.use((req, res) => {
   res.status(404).json({ success: false, message: "Endpoint not found" });
 });
 
-
 app.use((error, req, res, next) => {
   console.error(`${req.method} ${req.originalUrl} failed:`, error);
   res.status(error.status || 500).json({

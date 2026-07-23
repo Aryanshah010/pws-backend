@@ -1,6 +1,7 @@
 const BRAND = "Pathivara Store";
 
-const orderRef = (orderId) => `PWS-${orderId.toString().slice(-4).toUpperCase()}`;
+const orderRef = (orderId) =>
+  `PWS-${orderId.toString().slice(-4).toUpperCase()}`;
 
 module.exports = {
   BRAND,

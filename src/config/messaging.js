@@ -27,7 +27,7 @@ const whatsapp = {
   authToken: value("TWILIO_AUTH_TOKEN"),
   // Twilio's shared sandbox sender. Override only with an approved sender.
   from: value("TWILIO_WHATSAPP_FROM") || "whatsapp:+14155238886",
- 
+
   sandboxNumbers: value("TWILIO_WHATSAPP_SANDBOX_NUMBERS")
     .split(",")
     .map((entry) => toE164(entry))
