@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const {
   getProducts,
+  searchPreview,
   getProductById,
   createProduct,
   updateProduct,
@@ -14,6 +15,7 @@ const { protect, authorize } = require("../middleware/authMiddleware");
 
 router.get("/", getProducts);
 router.get("/categories", getCategories);
+router.get("/search-preview", searchPreview);
 router.get("/admin/list", protect, authorize("admin"), getAdminProducts);
 router.get("/:id", getProductById);
 router.post("/:id/restock-subscriptions", protect, subscribeToRestock);

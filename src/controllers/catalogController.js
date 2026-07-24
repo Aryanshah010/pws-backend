@@ -102,6 +102,74 @@ exports.getProducts = async (req, res) => {
   }
 };
 
+// Longest common prefix of an array of strings (used to derive a canonical
+// product name when a search matches via alias/Nepali name).
+const longestCommonPrefix = (strings) => {
+  if (!strings.length) return "";
+  let prefix = strings[0];
+  for (let i = 1; i < strings.length; i++) {
+    while (!strings[i].startsWith(prefix)) {
+      prefix = prefix.slice(0, -1);
+      if (!prefix) return "";
+    }
+  }
+  return prefix.trim();
+};
+
+exports.searchPreview = async (req, res) => {
+  try {
+    const q = (req.query.q || "").trim();
+    if (!q) {
+      return res.status(200).json({
+        success: true,
+        products: [],
+        totalCount: 0,
+        aliasMatch: null,
+      });
+    }
+
+    const searchRegex = new RegExp(escapeRegex(q), "i");
+    const filter = {
+      isActive: { $ne: false },
+      $or: [
+        { name: searchRegex },
+        { nameNe: searchRegex },
+        { category: searchRegex },
+        { aliases: searchRegex },
+      ],
+    };
+
+    const allMatches = await Product.find(filter).sort({ createdAt: -1 });
+    const totalCount = allMatches.length;
+    const products = allMatches.slice(0, 5);
+
+    // Determine whether the search resolved through an alias or Nepali name
+    let aliasMatch = null;
+    if (totalCount > 0) {
+      const directNameMatch = allMatches.some((p) => searchRegex.test(p.name));
+      if (!directNameMatch) {
+        // Matched via aliases or nameNe — compute the canonical resolved name
+        const names = allMatches.map((p) => p.name);
+        const prefix = longestCommonPrefix(names);
+        const resolved = prefix || allMatches[0].name;
+        aliasMatch = { query: q, resolved };
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      products,
+      totalCount,
+      aliasMatch,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 exports.getCategories = async (_req, res) => {
   try {
     const categories = await Product.distinct("category", {
