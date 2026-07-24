@@ -75,6 +75,11 @@ const orderSchema = new mongoose.Schema(
       trim: true,
       default: "",
     },
+
+    // Optional per-order contact override, so a buyer can be reached on a
+    // different name/number for this order without touching their account.
+    contactName: { type: String, trim: true, maxlength: 60, default: "" },
+    contactPhone: { type: String, trim: true, default: "" },
   },
   {
     timestamps: true,

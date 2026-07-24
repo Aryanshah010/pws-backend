@@ -58,6 +58,12 @@ const productSchema = new mongoose.Schema(
       min: [0, "Price cannot be negative"],
     },
 
+    wholesalePrice: {
+      type: Number,
+      default: null,
+      min: [0, "Price cannot be negative"],
+    },
+
     costPrice: {
       type: Number,
       default: 0,
@@ -94,9 +100,14 @@ const productSchema = new mongoose.Schema(
 );
 
 productSchema.pre("validate", function () {
-  for (const [label, tiers] of [
-    ["", this.discountTiers],
-    ["Wholesale ", this.wholesaleDiscountTiers],
+  const wholesaleBase =
+    this.wholesalePrice != null && this.wholesalePrice > 0
+      ? this.wholesalePrice
+      : this.retailPrice;
+
+  for (const [label, tiers, base] of [
+    ["", this.discountTiers, this.retailPrice],
+    ["Wholesale ", this.wholesaleDiscountTiers, wholesaleBase],
   ]) {
     if (!tiers?.length) continue;
 
@@ -112,9 +123,9 @@ productSchema.pre("validate", function () {
         );
       }
 
-      if (tier.discountAmount >= this.retailPrice * tier.minQuantity) {
+      if (tier.discountAmount >= base * tier.minQuantity) {
         throw new Error(
-          `${label}Tier at ${tier.minQuantity}+ gives Rs. ${tier.discountAmount} off, but ${tier.minQuantity} of these only costs Rs. ${this.retailPrice * tier.minQuantity}`,
+          `${label}Tier at ${tier.minQuantity}+ gives Rs. ${tier.discountAmount} off, but ${tier.minQuantity} of these only costs Rs. ${base * tier.minQuantity}`,
         );
       }
 

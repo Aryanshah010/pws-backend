@@ -79,12 +79,17 @@ exports.registerUser = async (req, res) => {
       role: isFirstAccount ? "admin" : role,
     });
 
+    const needsWholesaleForm = !isFirstAccount && role === "bulk/shop";
+
     res.status(201).json({
       success: true,
       message: isFirstAccount
         ? "Storekeeper account created. Please log in."
-        : "Account created. Please log in to continue.",
+        : needsWholesaleForm
+          ? "Account created. Tell us about your shop to request wholesale access."
+          : "Account created. Please log in to continue.",
       user: publicUser(user),
+      token: generateToken(user._id),
     });
   } catch (error) {
     res.status(500).json({

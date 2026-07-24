@@ -12,10 +12,19 @@ const { notifyAdmins } = require("../services/adminNotices");
 const {
   VAT_RATE,
   settleTotals,
-  normaliseTiers,
+  tierAt,
   nextTierAfter,
+  tiersFor,
+  unitPriceFor,
   lineDiscount,
 } = require("../config/pricing");
+
+const segmentsFor = (tiers, activeTier) => {
+  if (!activeTier || !tiers.length) return 0;
+  const reached = tiers.indexOf(activeTier) + 1;
+  if (reached === tiers.length) return 3;
+  return Math.max(1, Math.round((reached / tiers.length) * 3) || 1);
+};
 
 const ISSUE_LABELS = {
   missing: "missing item",
@@ -23,17 +32,6 @@ const ISSUE_LABELS = {
   wrong: "wrong item",
   other: "problem",
 };
-
-const tiersFor = (product, role) => {
-  if (product.discountable === false) return [];
-  const table =
-    role === "verified_wholesale" && product.wholesaleDiscountTiers?.length
-      ? product.wholesaleDiscountTiers
-      : product.discountTiers;
-  return normaliseTiers(table);
-};
-
-const priceFor = (product) => product.retailPrice;
 
 const dispatchOrderEvent = async (
   order,
@@ -91,7 +89,7 @@ const quoteItems = async (items, role) => {
       throw new Error(
         `Insufficient stock for ${product.name}. Remaining: ${product.stock}`,
       );
-    const unitPrice = priceFor(product);
+    const unitPrice = unitPriceFor(product, role);
     const retailSubtotal = unitPrice * quantity;
     const tiers = tiersFor(product, role);
     return {
@@ -119,20 +117,26 @@ exports.quoteOrder = async (req, res) => {
         discount,
         tiers,
         nextTier,
-      }) => ({
-        productId: product._id,
-        quantity,
-        unitPrice,
-        retailUnitPrice: product.retailPrice,
-        retailSubtotal,
-        discount,
-        tiers,
-        nextTier,
-        total: Math.max(0, retailSubtotal - discount),
-        stockStatus: product.stockStatus,
-        unit: product.unit,
-        name: product.name,
-      }),
+      }) => {
+        const activeTier = tierAt(tiers, quantity);
+        return {
+          productId: product._id,
+          quantity,
+          unitPrice,
+          retailUnitPrice: unitPrice,
+          retailSubtotal,
+          discount,
+          tiers,
+          nextTier,
+          threshold: tiers[0]?.minQuantity ?? null,
+          unlocked: Boolean(activeTier),
+          segments: segmentsFor(tiers, activeTier),
+          total: Math.max(0, retailSubtotal - discount),
+          stockStatus: product.stockStatus,
+          unit: product.unit,
+          name: product.name,
+        };
+      },
     );
     const subtotalAmount = items.reduce(
       (total, item) => total + item.retailSubtotal,
@@ -163,13 +167,28 @@ exports.quoteOrder = async (req, res) => {
 
 exports.createOrder = async (req, res) => {
   try {
-    const { items, pickupSlot, paymentMethod, paymentProofUrl, notes } =
-      req.body;
+    const {
+      items,
+      pickupSlot,
+      paymentMethod,
+      paymentProofUrl,
+      notes,
+      contactName,
+      contactPhone,
+    } = req.body;
 
     if (!items || items.length === 0) {
       return res
         .status(400)
         .json({ success: false, message: "Basket cannot be empty" });
+    }
+
+    const orderContactPhone = (contactPhone || "").trim();
+    if (orderContactPhone && !/^\d{10}$/.test(orderContactPhone)) {
+      return res.status(400).json({
+        success: false,
+        message: "Enter a valid 10-digit contact number",
+      });
     }
 
     const quotedItems = await quoteItems(items, req.user.role);
@@ -193,7 +212,7 @@ exports.createOrder = async (req, res) => {
           productId: product._id,
           quantity,
           unitPrice,
-          retailUnitPrice: product.retailPrice,
+          retailUnitPrice: unitPrice,
         })),
       });
     }
@@ -257,10 +276,12 @@ exports.createOrder = async (req, res) => {
       paymentProofUrl:
         paymentMethod === "Digital QR Transfer" ? paymentProofUrl : "",
       notes,
+      contactName: (contactName || "").trim(),
+      contactPhone: orderContactPhone,
     });
 
     await dispatchOrderEvent(order, templates.orderPlaced(order), {
-      phone: req.user.phone,
+      phone: orderContactPhone || req.user.phone,
       sms: true,
       whatsapp: true,
     });
@@ -344,7 +365,7 @@ exports.getBaskets = async (req, res, next) => {
     const baskets = await Basket.find({ user: req.user.id })
       .populate(
         "items.product",
-        "name unit retailPrice stock imageUrl discountTiers wholesaleDiscountTiers discountable category",
+        "name unit retailPrice wholesalePrice stock imageUrl discountTiers wholesaleDiscountTiers discountable category",
       )
       .sort({ updatedAt: -1 });
     res.status(200).json({ success: true, baskets });
@@ -413,7 +434,7 @@ exports.reviewBasket = async (req, res, next) => {
         };
       }
 
-      const unitPrice = priceFor(product);
+      const unitPrice = unitPriceFor(product, req.user.role);
       const discount = lineDiscount(
         tiersFor(product, req.user.role),
         entry.quantity,
@@ -577,7 +598,7 @@ exports.getMyOrders = async (req, res) => {
     const orders = await Order.find({ user: req.user.id })
       .populate(
         "items.product",
-        "name unit retailPrice imageUrl discountTiers wholesaleDiscountTiers discountable stock category",
+        "name unit retailPrice wholesalePrice imageUrl discountTiers wholesaleDiscountTiers discountable stock category",
       )
       .sort({ createdAt: -1 });
 
@@ -643,7 +664,7 @@ exports.updateOrderStatus = async (req, res) => {
 
     const buyer = await User.findById(order.user);
     await dispatchOrderEvent(order, copyFor(order), {
-      phone: buyer?.phone,
+      phone: order.contactPhone || buyer?.phone,
       sms: ["Acknowledged", "Ready"].includes(order.orderStatus),
     });
 
