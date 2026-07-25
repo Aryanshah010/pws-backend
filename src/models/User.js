@@ -31,11 +31,32 @@ const userSchema = new mongoose.Schema(
       enum: [
         "household/individual",
         "bulk/shop",
+        "pending_wholesale",
         "verified_wholesale",
         "admin",
       ],
       default: "household/individual",
     },
+
+    wholesaleStatus: {
+      type: String,
+      enum: ["not_requested", "pending", "approved", "rejected"],
+      default: "not_requested",
+    },
+
+    wholesaleDetails: {
+      shopName: { type: String, trim: true },
+      shopLocation: { type: String, trim: true },
+      businessType: { type: String, trim: true },
+      panNumber: { type: String, trim: true },
+      estimatedMonthlyPurchase: { type: Number, min: 0 },
+    },
+
+    lastLoginAt: { type: Date, default: null },
+
+    passwordResetCode: { type: String, select: false },
+    passwordResetExpiresAt: { type: Date, select: false },
+    passwordResetAttempts: { type: Number, default: 0, select: false },
   },
   {
     timestamps: true,
@@ -47,7 +68,6 @@ userSchema.pre("save", async function () {
 
   const salt = await bcrypt.genSalt(10);
   this.password = await bcrypt.hash(this.password, salt);
-
 });
 
 userSchema.methods.matchPassword = async function (enteredPassword) {

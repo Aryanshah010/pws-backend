@@ -33,6 +33,10 @@ const orderSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
+    subtotalAmount: { type: Number, required: true },
+    discountAmount: { type: Number, default: 0 },
+    taxAmount: { type: Number, default: 0 },
+    costAmount: { type: Number, default: 0, select: false },
     pickupSlot: {
       type: String,
       required: [true, "Pickup time slot choice is required"],
@@ -51,7 +55,7 @@ const orderSchema = new mongoose.Schema(
 
     paymentStatus: {
       type: String,
-      enum: ["Unpaid", "Verifying", "Paid"],
+      enum: ["Unpaid", "Pending Proof", "Verifying", "Paid", "Rejected"],
       default: "Unpaid",
     },
 
@@ -59,11 +63,23 @@ const orderSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    paymentProof: {
+      transactionId: { type: String, trim: true, default: "" },
+      note: { type: String, trim: true, maxlength: 500, default: "" },
+      imageName: { type: String, trim: true, default: "" },
+      imageDataUrl: { type: String, default: "" },
+      submittedAt: { type: Date },
+    },
     notes: {
       type: String,
       trim: true,
       default: "",
     },
+
+    // Optional per-order contact override, so a buyer can be reached on a
+    // different name/number for this order without touching their account.
+    contactName: { type: String, trim: true, maxlength: 60, default: "" },
+    contactPhone: { type: String, trim: true, default: "" },
   },
   {
     timestamps: true,
